@@ -1,6 +1,6 @@
 ﻿import { useEffect, useRef, useState } from 'react'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
-import { faUser } from '@fortawesome/free-solid-svg-icons'
+import { faUser, faShieldHalved } from '@fortawesome/free-solid-svg-icons'
 import cardBackImg from './assets/card back.png'
 import { CARD_COLORS, CARD_TYPES } from './data/cards.ts'
 import {
@@ -16,6 +16,8 @@ import {
   startNextRound,
 } from './data/game.ts'
 import { playBotTurn } from './data/bots.ts'
+import TopBar from './TopBar.jsx'
+import PlayHistory from './PlayHistory.jsx'
 import './App.css'
 
 const CARD_TYPE_LABELS = {
@@ -34,7 +36,6 @@ const TARGETED_EFFECT_KINDS = new Set([
 ])
 
 function App() {
-  const playHistoryRef = useRef(null)
   const [game, setGame] = useState(null)
   const [selectedCardIds, setSelectedCardIds] = useState([])
   const [useSurcharge, setUseSurcharge] = useState(false)
@@ -114,13 +115,6 @@ function App() {
 
     return () => window.clearTimeout(timer)
   }, [game, autoPlay])
-
-  useEffect(() => {
-    const historyPanel = playHistoryRef.current
-    if (historyPanel) {
-      historyPanel.scrollTop = historyPanel.scrollHeight
-    }
-  }, [game?.playHistory?.length])
 
   function toggleCardSelection(card) {
     setPlayError('')
@@ -279,50 +273,16 @@ function App() {
 
   return (
     <main className="game-shell">
-      <header className="topbar">
-        <a
-          className="wordmark"
-          href="/"
-          aria-label="Overload, accueil"
-          onClick={(event) => {
-            event.preventDefault()
-            setGame(null)
-            setBotError('')
-            setThreatChoice('surcharge')
-            setThreatCardId('')
-            setSelectedCardIds([])
-            setUseSurcharge(false)
-            setPlayError('')
-          }}
-        >
-          <span className="wordmark-mark" aria-hidden="true">O</span>
-          <span>Overload</span>
-        </a>
-        {game ? (
-          <section
-            className="play-history"
-            ref={playHistoryRef}
-            aria-label="Historique des coups"
-            aria-live="polite"
-          >
-            <h2 className="play-history-title">Historique des coups</h2>
-            {game.playHistory.length === 0 ? (
-              <p className="play-history-empty">Aucun coup joué.</p>
-            ) : (
-              <ol className="play-history-list">
-                {game.playHistory.map((entry, index) => (
-                  <li className="play-history-entry" key={`${index}-${entry.playerName}`}>
-                    <span className="play-history-number">{index + 1}</span>
-                    <span>
-                      <strong>{entry.playerName}</strong> joue {entry.cardDescription} : {entry.action}
-                    </span>
-                  </li>
-                ))}
-              </ol>
-            )}
-          </section>
-        ) : null}
-      </header>
+      <div className="game-main">
+      <TopBar onHomeClick={() => {
+        setGame(null)
+        setBotError('')
+        setThreatChoice('surcharge')
+        setThreatCardId('')
+        setSelectedCardIds([])
+        setUseSurcharge(false)
+        setPlayError('')
+      }} />
 
       {!playerCount ? (
         <section className="setup-panel" aria-labelledby="setup-title">
@@ -510,18 +470,20 @@ function App() {
                     }
                   }}
                 >
-                  <div className="player-avatar">
-                    <FontAwesomeIcon icon={faUser} aria-hidden="true" />
-                  </div>
-                  <span className="player-name">{player.name}</span>
-                  <span className="player-hand-count">
-                    {player.hand.length} cartes
-                  </span>
-                  {(isCritical || player.shield) && (
-                    <span className="player-state">
-                      {isCritical && <span className="player-state-critical">État critique</span>}
-                      {player.shield && <span className="player-state-shield">Bouclier</span>}
+                  <div className="player-tag">
+                    <div className="player-tag-avatar">
+                      <FontAwesomeIcon icon={faUser} aria-hidden="true" />
+                    </div>
+                    <span className="player-tag-name">{player.name}</span>
+                    <span className="player-tag-shield" aria-hidden="true">
+                      {player.shield && <FontAwesomeIcon icon={faShieldHalved} />}
                     </span>
+                  </div>
+                  {(isCritical || isHandRevealed) && (
+                    <div className="player-status">
+                      {isCritical && <span className="player-status-badge player-status-critical">État critique</span>}
+                      {isHandRevealed && <span className="player-status-badge player-status-panne">Panne générale</span>}
+                    </div>
                   )}
                   <div
                     className="player-gauge"
@@ -609,25 +571,6 @@ function App() {
           </div>
           <div className="local-hand" aria-label="Votre main">
             <span className="local-hand-label">Votre main</span>
-            <div className="bot-controls">
-              <label className="auto-toggle">
-                <input
-                  type="checkbox"
-                  checked={autoPlay}
-                  onChange={(event) => setAutoPlay(event.target.checked)}
-                />
-                <span>Auto</span>
-              </label>
-              {isBotTurn && !autoPlay && (
-                <button
-                  className="next-bot-button"
-                  type="button"
-                  onClick={handleNextBot}
-                >
-                  Suivant
-                </button>
-              )}
-            </div>
             <div className="local-hand-cards">
               {game.players[0].hand.map((card, index) => {
                 const color = CARD_COLORS.find(
@@ -653,22 +596,9 @@ function App() {
                     }}
                     onClick={() => toggleCardSelection(card)}
                   >
-                    <span className="hand-card-corner hand-card-corner-tl">
-                      <span className="hand-card-val">
-                        {card.type === CARD_TYPES.NUMBER
-                          ? card.value
-                          : CARD_TYPE_LABELS[card.type].slice(0, 2).toUpperCase()}
-                      </span>
-                      <span className="hand-card-dot" />
-                    </span>
-                    <span className="hand-card-center" aria-hidden="true">♣</span>
-                    <span className="hand-card-corner hand-card-corner-br" aria-hidden="true">
-                      <span className="hand-card-dot" />
-                      <span className="hand-card-val">
-                        {card.type === CARD_TYPES.NUMBER
-                          ? card.value
-                          : CARD_TYPE_LABELS[card.type].slice(0, 2).toUpperCase()}
-                      </span>
+                    <span className="opponent-card-color">{color.label}</span>
+                    <span className={`opponent-card-value${card.type !== CARD_TYPES.NUMBER ? ' opponent-card-value-special' : ''}`} aria-hidden="true">
+                      {card.type === CARD_TYPES.NUMBER ? card.value : CARD_TYPE_LABELS[card.type]}
                     </span>
                     {card.power && (
                       <span
@@ -791,25 +721,49 @@ function App() {
                 {playError && (
                   <span className="play-error" role="status">{playError}</span>
                 )}
-                <button
-                  className="play-card-button"
-                  type="button"
-                  disabled={
-                    selectedCardIds.length === 0 ||
-                    (Boolean(game.pendingEffect) && !isReplayingCard) ||
-                    (requiresSurcharge && !useSurcharge)
-                  }
-                  onClick={handlePlayCards}
-                >
-                  {isReplayingCard
-                    ? 'Rejouer la carte'
-                    : `Jouer${isComboSelection ? ' le combo' : ' la carte'}`}
-                </button>
               </div>
             )}
           </div>
         </section>
       )}
+      {game && playerCount && (
+        <div className="bottom-bar">
+          <label className="bottom-bar-auto">
+            <input
+              type="checkbox"
+              checked={autoPlay}
+              onChange={(event) => setAutoPlay(event.target.checked)}
+            />
+            <span>Auto</span>
+          </label>
+          <button
+            className="bottom-bar-btn bottom-bar-suivant"
+            type="button"
+            disabled={autoPlay || !isBotTurn}
+            onClick={handleNextBot}
+          >
+            Suivant
+          </button>
+          <button
+            className="bottom-bar-btn bottom-bar-jouer"
+            type="button"
+            disabled={
+              game.currentPlayerIndex !== 0 ||
+              Boolean(game.roundResult) ||
+              selectedCardIds.length === 0 ||
+              (Boolean(game.pendingEffect) && !isReplayingCard) ||
+              (requiresSurcharge && !useSurcharge)
+            }
+            onClick={handlePlayCards}
+          >
+            {isReplayingCard
+              ? 'Rejouer la carte'
+              : `Jouer${isComboSelection ? ' le combo' : ' la carte'}`}
+          </button>
+        </div>
+      )}
+      </div>
+      {game ? <PlayHistory playHistory={game.playHistory} /> : null}
     </main>
   )
 }
