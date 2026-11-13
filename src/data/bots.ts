@@ -5,6 +5,7 @@ import {
   isCardPlayable,
   isCriticalState,
   isMirrorOnMirrorForbidden,
+  MAX_GAUGE,
   playCards,
   replayCard,
   resolvePendingEffect,
@@ -245,6 +246,12 @@ function resolveBotEffects(
         },
         random,
       ) as GameState
+    } else if (effect.kind === 'targeted-threat-response' && effect.playerIndex !== 0) {
+      const respondingBot = nextGame.players[effect.playerIndex]
+      const threatChoice = respondingBot.gauge >= MAX_GAUGE - 1 ? 'card' : 'surcharge'
+      nextGame = resolvePendingEffect(nextGame, { threatChoice }, random) as GameState
+    } else if (effect.kind === 'targeted-threat-response' && effect.playerIndex === 0) {
+      break
     } else if (
       effect.kind === 'left-neighbor-swap' ||
       (

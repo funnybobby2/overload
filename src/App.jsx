@@ -1,30 +1,26 @@
-﻿import { useEffect, useRef, useState } from 'react'
-import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
-import { faUser, faShieldHalved } from '@fortawesome/free-solid-svg-icons'
-import cardBackImg from './assets/card back.png'
+﻿import { useEffect, useState } from 'react'
 import { CARD_COLORS, CARD_TYPES } from './data/cards.ts'
 import {
   createGame,
   finishTurn,
+  forceEndRound,
   isCriticalState,
   isCardPlayable,
   isMirrorOnMirrorForbidden,
-  MAX_GAUGE,
   playCards,
   replayCard,
   resolvePendingEffect,
   startNextRound,
 } from './data/game.ts'
 import { playBotTurn } from './data/bots.ts'
-import TopBar from './TopBar.jsx'
-import PlayHistory from './PlayHistory.jsx'
+import { HandCard } from './components/Card.jsx'
+import TopBar from './components/TopBar.jsx'
+import BottomBar from './components/BottomBar.jsx'
+import PlayHistory from './components/PlayHistory.jsx'
+import GameTable from './components/GameTable.jsx'
+import Snackbar from './components/Snackbar.jsx'
 import './App.css'
 
-const CARD_TYPE_LABELS = {
-  [CARD_TYPES.OVERLOAD]: 'Overload',
-  [CARD_TYPES.MIRROR]: 'Miroir',
-  [CARD_TYPES.CHAOS]: 'Chaos',
-}
 
 const TARGETED_EFFECT_KINDS = new Set([
   'number-one-combo-target',
@@ -38,12 +34,10 @@ const TARGETED_EFFECT_KINDS = new Set([
 function App() {
   const [game, setGame] = useState(null)
   const [selectedCardIds, setSelectedCardIds] = useState([])
-  const [useSurcharge, setUseSurcharge] = useState(false)
   const [playError, setPlayError] = useState('')
   const [botError, setBotError] = useState('')
-  const [autoPlay, setAutoPlay] = useState(true)
-  const [threatChoice, setThreatChoice] = useState('surcharge')
-  const [threatCardId, setThreatCardId] = useState('')
+  const [autoPlay, setAutoPlay] = useState(false)
+  const [deckError, setDeckError] = useState(null)
   const playerCount = game?.players.length
   const localPlayer = game?.players[0]
   const selectedCards = localPlayer
@@ -67,6 +61,9 @@ function App() {
   const isChoosingColor =
     game?.pendingEffect?.kind === 'choose-color' &&
     game.pendingEffect.playerIndex === 0
+  const isRespondingToThreat =
+    game?.pendingEffect?.kind === 'targeted-threat-response' &&
+    game.pendingEffect.playerIndex === 0
   const combosBlocked =
     game?.combosBlockedUntilTurn === game?.turnNumber
   const isChaosHumanPick = game?.pendingEffect?.kind === 'chaos-human-pick'
@@ -87,14 +84,19 @@ function App() {
       const nextGame = playBotTurn(currentGame, botIndex)
       setBotError('')
       setSelectedCardIds([])
-      setUseSurcharge(false)
+
       setGame((g) => g === currentGame ? nextGame : g)
     } catch (error) {
-      setBotError(
-        error instanceof Error
-          ? error.message
-          : "Un adversaire n'a pas pu jouer.",
-      )
+      if (error instanceof RangeError && error.message.startsWith('La pioche ne contient pas assez')) {
+        setDeckError(error.message)
+        setBotError('')
+      } else {
+        setBotError(
+          error instanceof Error
+            ? error.message
+            : "Un adversaire n'a pas pu jouer.",
+        )
+      }
     }
   }
 
@@ -118,7 +120,6 @@ function App() {
 
   function toggleCardSelection(card) {
     setPlayError('')
-    setUseSurcharge(false)
     if (isMirrorOnMirrorForbidden(card, game.discardPile)) {
       setPlayError('Vous ne pouvez pas poser un Miroir sur un autre Miroir.')
       return
@@ -169,8 +170,8 @@ function App() {
   function handlePlayCards() {
     try {
       let nextGame = isReplayingCard
-        ? replayCard(game, 0, selectedCardIds, useSurcharge)
-        : playCards(game, 0, selectedCardIds, useSurcharge)
+        ? replayCard(game, 0, selectedCardIds, requiresSurcharge)
+        : playCards(game, 0, selectedCardIds, requiresSurcharge)
       const effect = nextGame.pendingEffect
       const isChaosEffect =
         effect?.kind === 'left-neighbor-swap' ||
@@ -194,10 +195,14 @@ function App() {
           : nextGame,
       )
       setSelectedCardIds([])
-      setUseSurcharge(false)
+
       setPlayError('')
     } catch (error) {
-      setPlayError(error.message)
+      if (error instanceof RangeError && error.message.startsWith('La pioche ne contient pas assez')) {
+        setDeckError(error.message)
+      } else {
+        setPlayError(error.message)
+      }
     }
   }
 
@@ -207,22 +212,31 @@ function App() {
     }
 
     try {
-      const resolvedGame = resolvePendingEffect(game, {
-        targetPlayerIndex,
-        threatChoice,
-        offeredCardId: threatCardId,
-      })
-      setGame(
-        resolvedGame.pendingEffect
-          ? resolvedGame
-          : finishTurn(resolvedGame),
-      )
+      let resolvedGame = resolvePendingEffect(game, { targetPlayerIndex })
+      if (
+        resolvedGame.pendingEffect?.kind === 'targeted-threat-response' &&
+        resolvedGame.pendingEffect.playerIndex !== 0
+      ) {
+        resolvedGame = resolvePendingEffect(resolvedGame, { threatChoice: 'surcharge' })
+      }
+      setGame(resolvedGame.pendingEffect ? resolvedGame : finishTurn(resolvedGame))
       setPlayError('')
-      setThreatChoice('surcharge')
-      setThreatCardId('')
     } catch (error) {
       setPlayError(
         error instanceof Error ? error.message : "L'effet n'a pas pu être appliqué.",
+      )
+    }
+  }
+
+  function handleRespondToThreat(choice) {
+    if (!game || !isRespondingToThreat) return
+    try {
+      const resolvedGame = resolvePendingEffect(game, { threatChoice: choice })
+      setGame(resolvedGame.pendingEffect ? resolvedGame : finishTurn(resolvedGame))
+      setPlayError('')
+    } catch (error) {
+      setPlayError(
+        error instanceof Error ? error.message : "La réponse n'a pas pu être appliquée.",
       )
     }
   }
@@ -260,38 +274,60 @@ function App() {
     }
   }
 
-  const revealedCardColor = game
-    ? CARD_COLORS.find((color) => color.id === game.revealedCard.color)
-    : null
-  const tableColor = game
-    ? CARD_COLORS.find(
-      (color) => color.id === (
-        game.activeColor === 'purple' ? 'purple' : game.activeColor
-      ),
-    )
-    : null
+  let snackbarMessage = null
+  let snackbarAction = null
+  if (deckError) {
+    snackbarMessage = deckError
+    snackbarAction = {
+      label: 'Terminer la manche',
+      onClick: () => {
+        setGame(forceEndRound(game))
+        setDeckError(null)
+      },
+    }
+  } else if (game && !game.roundResult) {
+    if (isChaosHumanPick) {
+      const chaosPlayer = game.players[game.pendingEffect.playerIndex]
+      const neighborPlayer = game.players[chaosNeighborIndex]
+      snackbarMessage = `${chaosPlayer.name} a joué une carte Chaos — choisissez une carte chez ${neighborPlayer.name}`
+    } else if (isRespondingToThreat) {
+      const sourcePlayer = game.players[game.pendingEffect.sourcePlayerIndex]
+      snackbarMessage = `${sourcePlayer.name} vous menace avec son 7 — choisissez votre réponse`
+    } else if (isChoosingTarget) {
+      const kind = game.pendingEffect.kind
+      if (kind === 'targeted-spy') snackbarMessage = 'Espionnez la main d\'un joueur adverse'
+      else if (kind === 'targeted-exchange') snackbarMessage = 'Échangez une carte avec un joueur adverse'
+      else if (kind === 'targeted-surcharge') snackbarMessage = 'Infligez une surcharge à un joueur adverse'
+      else if (kind === 'targeted-surcharge-transfer') snackbarMessage = 'Transférez votre surcharge à un joueur adverse'
+      else if (kind === 'targeted-threat') snackbarMessage = 'Menacez un joueur adverse avec votre 7'
+      else snackbarMessage = 'Choisissez un joueur cible'
+    } else if (isChoosingColor) {
+      snackbarMessage = game.pendingEffect.isCombo
+        ? 'Choisissez une couleur — les combos seront bloqués au prochain tour'
+        : 'Choisissez la couleur active'
+    } else if (isReplayingCard) {
+      snackbarMessage = 'Effet rejouer — sélectionnez une carte valide'
+    }
+  }
 
   return (
     <main className="game-shell">
       <div className="game-main">
-      <TopBar onHomeClick={() => {
+      {playerCount && <TopBar onHomeClick={() => {
         setGame(null)
         setBotError('')
-        setThreatChoice('surcharge')
-        setThreatCardId('')
         setSelectedCardIds([])
-        setUseSurcharge(false)
         setPlayError('')
-      }} />
+        setDeckError(null)
+      }} />}
 
       {!playerCount ? (
         <section className="setup-panel" aria-labelledby="setup-title">
-          <div className="setup-emblem" aria-hidden="true">O</div>
+          <img src="./logo.png" alt="Overload" width="175" />
           <p className="eyebrow">La table est à vous</p>
           <h1 id="setup-title">On lance une partie&nbsp;?</h1>
           <p className="setup-description">
-            Réunissez les joueurs autour de la table et que la meilleure main
-            l'emporte.
+            Réunissez les joueurs autour de la table et survivez à la surcharge !
           </p>
           <label className="select-label" htmlFor="player-count">
             Nombre de joueurs
@@ -303,11 +339,9 @@ function App() {
             onChange={(event) => {
               setGame(createGame(Number(event.target.value)))
               setBotError('')
-              setThreatChoice('surcharge')
-              setThreatCardId('')
               setSelectedCardIds([])
-              setUseSurcharge(false)
               setPlayError('')
+              setDeckError(null)
             }}
           >
             <option value="" disabled>Choisir entre 2 et 6 joueurs</option>
@@ -324,302 +358,38 @@ function App() {
           className="game-area"
           aria-label={`Table de jeu pour ${playerCount} joueurs`}
         >
-          <div className="table-stage">
-            {botError && (
-              <span className="bot-error" role="alert">{botError}</span>
-            )}
-            <div
-              className="game-table"
-              style={{ '--table-color': tableColor.hex }}
-            >
-              <div className="table-ring">
-                <div className="table-center">
-                  {game.roundResult ? (
-                    <div className="round-result" aria-live="polite">
-                      <span className="table-subtitle">
-                        {game.matchResult ? 'Fin de partie' : `Manche ${game.roundNumber} terminée`}
-                      </span>
-                      <span className="round-winner">
-                        {game.matchResult
-                          ? `${game.matchResult.winners.join(', ')} remporte${game.matchResult.winners.length > 1 ? 'nt' : ''} la partie`
-                          : `${game.roundResult.winnerName} gagne la manche`}
-                      </span>
-                      {game.matchResult && (
-                        <span className="match-trigger">
-                          Seuil atteint par {game.matchResult.triggeredBy
-                            .map((index) => game.players[index].name)
-                            .join(', ')}
-                        </span>
-                      )}
-                      <span className="round-score-title">
-                        {game.matchResult ? 'Classement final' : 'Pénalités · total'}
-                      </span>
-                      <ul className="round-score-list">
-                        {game.roundResult.penalties.map((penalty) => (
-                          <li key={penalty.playerIndex}>
-                            <span>{penalty.playerName}</span>
-                            <span>
-                              {game.roundResult.matchOver
-                                ? `${game.roundResult.cumulativeScores[penalty.playerIndex]} pts`
-                                : `+${penalty.totalPenalty} · ${game.roundResult.cumulativeScores[penalty.playerIndex]} pts`}
-                            </span>
-                          </li>
-                        ))}
-                      </ul>
-                      {!game.matchResult && (
-                        <button
-                          className="next-round-button"
-                          type="button"
-                          onClick={() => {
-                            setGame(startNextRound(game))
-                            setBotError('')
-                            setThreatChoice('surcharge')
-                            setThreatCardId('')
-                            setSelectedCardIds([])
-                            setUseSurcharge(false)
-                            setPlayError('')
-                          }}
-                        >
-                          Manche suivante
-                        </button>
-                      )}
-                    </div>
-                  ) : (
-                    <>
-                      <span className="table-subtitle">
-                        Sens {game.turnDirection === 1 ? 'horaire' : 'antihoraire'}
-                      </span>
-                      <span className="table-player-count">
-                        {playerCount} JOUEURS
-                      </span>
-                      <div
-                        className="revealed-card"
-                        style={{ '--card-color': revealedCardColor.hex }}
-                        role="img"
-                        aria-label={
-                          game.revealedCard.type === CARD_TYPES.NUMBER
-                            ? `Carte révélée : ${game.revealedCard.value} ${revealedCardColor.label.toLowerCase()}`
-                            : `Carte révélée : ${CARD_TYPE_LABELS[game.revealedCard.type]}, ${revealedCardColor.label.toLowerCase()}`
-                        }
-                      >
-                        <span className="revealed-card-color">
-                          {revealedCardColor.label}
-                        </span>
-                        <span className={`revealed-card-face${game.revealedCard.type !== CARD_TYPES.NUMBER ? ' revealed-card-special' : ''}`}>
-                          {game.revealedCard.type === CARD_TYPES.NUMBER
-                            ? game.revealedCard.value
-                            : CARD_TYPE_LABELS[game.revealedCard.type]}
-                        </span>
-                      </div>
-                      <span className="revealed-card-caption">Première carte</span>
-                      <span className="table-starter">
-                        Commence : {game.players[game.startingPlayerIndex].name}
-                      </span>
-                      <span className="draw-pile">
-                        Pioche · {game.drawPile.length} cartes
-                        {game.lowDeckActive && ' · Panne générale ×2'}
-                      </span>
-                    </>
-                  )}
-                </div>
-              </div>
-            </div>
-            {game.players.map((player, index) => {
-              const isCurrentPlayer = index === game.currentPlayerIndex
-              const angle = Math.PI / 2 + (index * 2 * Math.PI) / playerCount
-              const x = 50 + Math.cos(angle) * 43
-              const y = 50 + Math.sin(angle) * 43
-              const handOnLeft = x < 50
-              const isHandRevealed = player.handVisibleUntilTurn > game.turnNumber
-              const isCritical = isCriticalState(player)
-
-              return (
-                <div
-                  className={`player-seat${isCurrentPlayer ? ' player-seat-current' : ''}`}
-                  key={player.id}
-                  style={{ left: `${x}%`, top: `${y}%` }}
-                  aria-label={`${player.name}, ${player.hand.length} cartes, jauge ${player.gauge} sur ${MAX_GAUGE}${isCurrentPlayer ? ', commence la partie' : ''}`}
-                  role={
-                    isChoosingTarget &&
-                    game.pendingEffect.playerIndex !== index
-                      ? 'button'
-                      : undefined
-                  }
-                  tabIndex={
-                    isChoosingTarget &&
-                    game.pendingEffect.playerIndex !== index
-                      ? 0
-                      : undefined
-                  }
-                  onClick={() => {
-                    if (
-                      isChoosingTarget &&
-                      game.pendingEffect.playerIndex !== index
-                    ) {
-                      handleTargetPlayer(index)
-                    }
-                  }}
-                  onKeyDown={(event) => {
-                    if (
-                      isChoosingTarget &&
-                      game.pendingEffect.playerIndex !== index &&
-                      (event.key === 'Enter' || event.key === ' ')
-                    ) {
-                      event.preventDefault()
-                      handleTargetPlayer(index)
-                    }
-                  }}
-                >
-                  <div className="player-tag">
-                    <div className="player-tag-avatar">
-                      <FontAwesomeIcon icon={faUser} aria-hidden="true" />
-                    </div>
-                    <span className="player-tag-name">{player.name}</span>
-                    <span className="player-tag-shield" aria-hidden="true">
-                      {player.shield && <FontAwesomeIcon icon={faShieldHalved} />}
-                    </span>
-                  </div>
-                  {(isCritical || isHandRevealed) && (
-                    <div className="player-status">
-                      {isCritical && <span className="player-status-badge player-status-critical">État critique</span>}
-                      {isHandRevealed && <span className="player-status-badge player-status-panne">Panne générale</span>}
-                    </div>
-                  )}
-                  <div
-                    className="player-gauge"
-                    role="meter"
-                    aria-label={`Jauge de ${player.name}`}
-                    aria-valuemin={0}
-                    aria-valuemax={MAX_GAUGE}
-                    aria-valuenow={player.gauge}
-                  >
-                    {Array.from({ length: MAX_GAUGE }, (_, gaugeIndex) => (
-                      <span
-                        className={`gauge-segment${gaugeIndex < player.gauge ? ' gauge-segment-filled' : ''}`}
-                        key={gaugeIndex}
-                      />
-                    ))}
-                    <span className="gauge-value">
-                      {player.gauge}/{MAX_GAUGE}
-                    </span>
-                  </div>
-                  {isCurrentPlayer && (
-                    <span className="player-turn">
-                      {index === 0 ? 'À vous de jouer' : autoPlay ? 'Réfléchit…' : 'En attente'}
-                    </span>
-                  )}
-                  {player.id !== 0 && (
-                    <div
-                      className={`opponent-hand${handOnLeft ? ' opponent-hand-left' : ''}${isHandRevealed ? ' opponent-hand-revealed' : ''}`}
-                      role="group"
-                      aria-label={`${isHandRevealed ? 'Main révélée' : 'Main cachée'} de ${player.name}, ${player.hand.length} cartes`}
-                    >
-                      {player.hand.map((card, cardIndex) => {
-                        if (!isHandRevealed) {
-                          const isPickable = isChaosHumanPick && index === chaosNeighborIndex
-                          return (
-                            <span
-                              className={`opponent-card${isPickable ? ' opponent-card-pickable' : ''}`}
-                              key={card.id}
-                              style={{ '--card-index': cardIndex }}
-                              role={isPickable ? 'button' : undefined}
-                              tabIndex={isPickable ? 0 : undefined}
-                              aria-label={isPickable ? 'Choisir cette carte' : undefined}
-                              aria-hidden={!isPickable ? true : undefined}
-                              onClick={isPickable ? () => handleChaosCardPick(card.id) : undefined}
-                              onKeyDown={isPickable ? (event) => {
-                                if (event.key === 'Enter' || event.key === ' ') {
-                                  event.preventDefault()
-                                  handleChaosCardPick(card.id)
-                                }
-                              } : undefined}
-                            >
-                              <img src={cardBackImg} alt="" className="opponent-card-back" />
-                            </span>
-                          )
-                        }
-
-                        const color = CARD_COLORS.find(
-                          (cardColor) => cardColor.id === card.color,
-                        )
-                        const label = card.type === CARD_TYPES.NUMBER
-                          ? `${card.value} ${color.label.toLowerCase()}`
-                          : `${CARD_TYPE_LABELS[card.type]}, ${color.label.toLowerCase()}`
-
-                        return (
-                          <span
-                            className="opponent-card opponent-card-visible"
-                            key={card.id}
-                            style={{ '--card-color': color.hex, '--card-index': cardIndex }}
-                            role="img"
-                            aria-label={label}
-                          >
-                            <span className="opponent-card-color">{color.label}</span>
-                            <span className={`opponent-card-value${card.type !== CARD_TYPES.NUMBER ? ' opponent-card-value-special' : ''}`}>
-                              {card.type === CARD_TYPES.NUMBER
-                                ? card.value
-                                : CARD_TYPE_LABELS[card.type]}
-                            </span>
-                          </span>
-                        )
-                      })}
-                    </div>
-                  )}
-                </div>
-              )
-            })}
-          </div>
+          <GameTable
+            game={game}
+            botError={botError}
+            autoPlay={autoPlay}
+            isChoosingTarget={isChoosingTarget}
+            isChaosHumanPick={isChaosHumanPick}
+            chaosNeighborIndex={chaosNeighborIndex}
+            onNextRound={() => {
+              setGame(startNextRound(game))
+              setBotError('')
+              setSelectedCardIds([])
+              setPlayError('')
+              setDeckError(null)
+            }}
+            onTargetPlayer={handleTargetPlayer}
+            onChaosCardPick={handleChaosCardPick}
+          />
           <div className="local-hand" aria-label="Votre main">
             <span className="local-hand-label">Votre main</span>
             <div className="local-hand-cards">
               {game.players[0].hand.map((card, index) => {
-                const color = CARD_COLORS.find(
-                  (cardColor) => cardColor.id === card.color,
-                )
-                const label = card.type === CARD_TYPES.NUMBER
-                  ? `${card.value} ${color.label.toLowerCase()}`
-                  : `${CARD_TYPE_LABELS[card.type]}, ${color.label.toLowerCase()}`
-
+                const color = CARD_COLORS.find((cardColor) => cardColor.id === card.color)
                 return (
-                  <button
-                    className={`hand-card${card.type !== CARD_TYPES.NUMBER ? ' hand-card-special' : ''}${selectedCardIds.includes(card.id) ? ' hand-card-selected' : ''}`}
+                  <HandCard
                     key={card.id}
-                    type="button"
+                    card={card}
+                    color={color}
+                    selected={selectedCardIds.includes(card.id)}
                     disabled={game.currentPlayerIndex !== 0}
-                    tabIndex={0}
-                    aria-label={label}
-                    aria-pressed={selectedCardIds.includes(card.id)}
-                    aria-describedby={card.power ? `card-power-${card.id}` : undefined}
-                    style={{
-                      '--card-color': color.hex,
-                      '--card-index': index,
-                    }}
+                    cardIndex={index}
                     onClick={() => toggleCardSelection(card)}
-                  >
-                    <span className="opponent-card-color">{color.label}</span>
-                    <span className={`opponent-card-value${card.type !== CARD_TYPES.NUMBER ? ' opponent-card-value-special' : ''}`} aria-hidden="true">
-                      {card.type === CARD_TYPES.NUMBER ? card.value : CARD_TYPE_LABELS[card.type]}
-                    </span>
-                    {card.power && (
-                      <span
-                        className="card-power-tooltip"
-                        id={`card-power-${card.id}`}
-                        role="tooltip"
-                      >
-                        <span className="card-power-title">{card.power.name}</span>
-                        <span className="card-power-section">
-                          <span className="card-power-label">Effet simple</span>
-                          <span>{card.power.simple}</span>
-                        </span>
-                        {card.power.combo && (
-                          <span className="card-power-section">
-                            <span className="card-power-label">Effet combo</span>
-                            <span>{card.power.combo}</span>
-                          </span>
-                        )}
-                      </span>
-                    )}
-                  </button>
+                  />
                 )
               })}
             </div>
@@ -671,52 +441,33 @@ function App() {
                     </div>
                   </div>
                 )}
-                {game.pendingEffect?.kind === 'targeted-threat' && (
-                  <label className="threat-choice">
-                    <span>Effet de Menace</span>
-                    <select
-                      value={threatChoice}
-                      onChange={(event) => setThreatChoice(event.target.value)}
-                    >
-                      <option value="surcharge">Lui infliger une surcharge</option>
-                      <option value="card">Lui donner une de mes cartes</option>
-                    </select>
-                    {threatChoice === 'card' && (
-                      <select
-                        aria-label="Carte à donner"
-                        value={threatCardId}
-                        onChange={(event) => setThreatCardId(event.target.value)}
+                {isRespondingToThreat && (
+                  <div className="threat-response">
+                    <span className="threat-response-label">
+                      Menace de {game.players[game.pendingEffect.sourcePlayerIndex].name} — choisissez :
+                    </span>
+                    <div className="threat-response-choices">
+                      <button
+                        type="button"
+                        className="threat-response-btn"
+                        onClick={() => handleRespondToThreat('surcharge')}
                       >
-                        <option value="">Choisir la carte à donner</option>
-                        {localPlayer.hand.map((card) => {
-                          const color = CARD_COLORS.find(
-                            (cardColor) => cardColor.id === card.color,
-                          )
-                          const label = card.type === CARD_TYPES.NUMBER
-                            ? `${card.value} ${color.label.toLowerCase()}`
-                            : `${CARD_TYPE_LABELS[card.type]}, ${color.label.toLowerCase()}`
-                          return (
-                            <option key={card.id} value={card.id}>{label}</option>
-                          )
-                        })}
-                      </select>
-                    )}
-                  </label>
+                        Prendre une surcharge
+                      </button>
+                      <button
+                        type="button"
+                        className="threat-response-btn"
+                        onClick={() => handleRespondToThreat('card')}
+                      >
+                        Prendre une carte de sa main
+                      </button>
+                    </div>
+                  </div>
                 )}
-                {game.pendingEffect && !isReplayingCard && !isChoosingTarget && !isChoosingColor && (
+                {game.pendingEffect && !isReplayingCard && !isChoosingTarget && !isChoosingColor && !isRespondingToThreat && (
                   <span className="play-error" role="status">
                     Cet effet nécessite une action avant le prochain tour.
                   </span>
-                )}
-                {requiresSurcharge && (
-                  <label className="surcharge-choice">
-                    <input
-                      type="checkbox"
-                      checked={useSurcharge}
-                      onChange={(event) => setUseSurcharge(event.target.checked)}
-                    />
-                    <span>Ajouter 1 surcharge pour ignorer les règles de pose</span>
-                  </label>
                 )}
                 {playError && (
                   <span className="play-error" role="status">{playError}</span>
@@ -727,41 +478,28 @@ function App() {
         </section>
       )}
       {game && playerCount && (
-        <div className="bottom-bar">
-          <label className="bottom-bar-auto">
-            <input
-              type="checkbox"
-              checked={autoPlay}
-              onChange={(event) => setAutoPlay(event.target.checked)}
-            />
-            <span>Auto</span>
-          </label>
-          <button
-            className="bottom-bar-btn bottom-bar-suivant"
-            type="button"
-            disabled={autoPlay || !isBotTurn}
-            onClick={handleNextBot}
-          >
-            Suivant
-          </button>
-          <button
-            className="bottom-bar-btn bottom-bar-jouer"
-            type="button"
-            disabled={
-              game.currentPlayerIndex !== 0 ||
-              Boolean(game.roundResult) ||
-              selectedCardIds.length === 0 ||
-              (Boolean(game.pendingEffect) && !isReplayingCard) ||
-              (requiresSurcharge && !useSurcharge)
-            }
-            onClick={handlePlayCards}
-          >
-            {isReplayingCard
+        <BottomBar
+          autoPlay={autoPlay}
+          onAutoPlayChange={setAutoPlay}
+          isBotTurn={isBotTurn}
+          onNextBot={handleNextBot}
+          playDisabled={
+            game.currentPlayerIndex !== 0 ||
+            Boolean(game.roundResult) ||
+            selectedCardIds.length === 0 ||
+            (Boolean(game.pendingEffect) && !isReplayingCard)
+          }
+          playLabel={
+            isReplayingCard
               ? 'Rejouer la carte'
-              : `Jouer${isComboSelection ? ' le combo' : ' la carte'}`}
-          </button>
-        </div>
+              : requiresSurcharge
+                ? `Jouer${isComboSelection ? ' le combo' : ' la carte'} (+ 1 surcharge)`
+                : `Jouer${isComboSelection ? ' le combo' : ' la carte'}`
+          }
+          onPlay={handlePlayCards}
+        />
       )}
+      <Snackbar message={snackbarMessage} action={snackbarAction} />
       </div>
       {game ? <PlayHistory playHistory={game.playHistory} /> : null}
     </main>

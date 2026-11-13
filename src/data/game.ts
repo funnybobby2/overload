@@ -20,6 +20,7 @@ export interface Player {
   attacksSinceTurn: number
   shield: boolean
   handVisibleUntilTurn: number | null
+  handVisibleToPlayerIndex: number | null
 }
 
 export interface PlayRecord {
@@ -28,6 +29,7 @@ export interface PlayRecord {
   action: string
   cards: Card[]
   isCombo: boolean
+  consequences: string[]
 }
 
 export interface LastPlay {
@@ -49,6 +51,7 @@ export type EffectKind =
   | 'targeted-exchange'
   | 'targeted-surcharge-transfer'
   | 'targeted-threat'
+  | 'targeted-threat-response'
   | 'chaos-human-pick'
 
 export interface PendingEffect {
@@ -60,6 +63,7 @@ export interface PendingEffect {
   isCombo: boolean
   power: CardPower | null
   copiedPlay?: LastPlay | null
+  sourcePlayerIndex?: number
 }
 
 export interface RoundPenalty {
@@ -218,6 +222,7 @@ function describePlay(player: Player, cards: Card[], game: GameState): PlayRecor
     action,
     cards: cards.map((playedCard) => ({ ...playedCard })),
     isCombo: cards.length > 1,
+    consequences: [],
   }
 }
 
@@ -492,21 +497,21 @@ export function applyNegativeEffect(
   return nextGame
 }
 
-export function calculateRoundPenalties(players: Player[], winnerIndex: number): RoundPenalty[] {
+export function calculateRoundPenalties(players: Player[], winnerIndex: number, exemptWinner = true): RoundPenalty[] {
   if (!Number.isInteger(winnerIndex) || !players[winnerIndex]) {
     throw new RangeError("Le joueur gagnant de la manche est invalide.")
   }
 
   return players.map((player, playerIndex) => {
-    const cardsPenalty = playerIndex === winnerIndex ? 0 : player.hand.length
-    const surchargePenalty =
-      playerIndex === winnerIndex ? 0 : player.gauge * 3
+    const isExempt = exemptWinner && playerIndex === winnerIndex
+    const cardsPenalty = isExempt ? 0 : player.hand.length
+    const surchargePenalty = isExempt ? 0 : player.gauge * 3
 
     return {
       playerIndex,
       playerName: player.name,
-      cardsRemaining: playerIndex === winnerIndex ? 0 : player.hand.length,
-      surchargeLevels: playerIndex === winnerIndex ? 0 : player.gauge,
+      cardsRemaining: isExempt ? 0 : player.hand.length,
+      surchargeLevels: isExempt ? 0 : player.gauge,
       cardsPenalty,
       surchargePenalty,
       totalPenalty: cardsPenalty + surchargePenalty,
@@ -540,6 +545,7 @@ export function createGame(playerCount: number, random: () => number = Math.rand
     attacksSinceTurn: 0,
     shield: false,
     handVisibleUntilTurn: null as number | null,
+    handVisibleToPlayerIndex: null as number | null,
   }))
 
   for (let cardIndex = 0; cardIndex < handSize; cardIndex += 1) {
@@ -793,7 +799,9 @@ export function playCards(game: GameState, playerIndex: number, cardIds: string[
   }
 
   if (!roundResult && !pendingEffect && playedCard.type === CARD_TYPES.NUMBER) {
-    return applyAutoCardEffect(resultGame, playerIndex, playedCard.value!, isCombo, turnDirection)
+    const before = resultGame.players
+    const afterEffect = applyAutoCardEffect(resultGame, playerIndex, playedCard.value!, isCombo, turnDirection)
+    return appendConsequencesToEntry(afterEffect, afterEffect.playHistory.length - 1, before)
   }
 
   return resultGame
@@ -908,6 +916,29 @@ function resolveChaos(game: GameState, random: () => number, humanChoiceCardId: 
   return nextGame
 }
 
+function computeConsequences(before: Player[], after: Player[]): string[] {
+  const results: string[] = []
+  for (let i = 0; i < after.length; i++) {
+    const p = before[i]
+    const n = after[i]
+    if (!p.shield && n.shield) results.push(`${n.name} obtient un bouclier`)
+    if (p.shield && !n.shield) results.push(`${n.name} perd son bouclier`)
+    if (!isCriticalState(p) && isCriticalState(n)) results.push(`${n.name} est en état critique`)
+    if (n.gauge === 0 && p.gauge > 0 && n.hand.length > p.hand.length) results.push(`${n.name} déclenche une surcharge maximale`)
+  }
+  return results
+}
+
+function appendConsequencesToEntry(game: GameState, historyIndex: number, before: Player[]): GameState {
+  const consequences = computeConsequences(before, game.players)
+  if (consequences.length === 0) return game
+  const playHistory = [...game.playHistory]
+  const entry = playHistory[historyIndex]
+  if (!entry) return game
+  playHistory[historyIndex] = { ...entry, consequences: [...entry.consequences, ...consequences] }
+  return { ...game, playHistory }
+}
+
 export function resolvePendingEffect(game: GameState, options: ResolveOptions = {}, random: () => number = Math.random): GameState {
   if (game.matchResult) {
     throw new Error("La partie est terminee.")
@@ -921,6 +952,10 @@ export function resolvePendingEffect(game: GameState, options: ResolveOptions = 
   if (!effect) {
     throw new Error("Aucun effet n'attend d'etre resolu.")
   }
+
+  const before = game.players
+  const historyIndex = effect?.historyIndex ?? 0
+  const withC = (s: GameState): GameState => appendConsequencesToEntry(s, historyIndex, before)
 
   if (effect.kind === 'number-one-replay') {
     throw new Error("Selectionnez une carte a rejouer.")
@@ -972,7 +1007,7 @@ export function resolvePendingEffect(game: GameState, options: ResolveOptions = 
     const action = effect.cardType === CARD_TYPES.MIRROR
       ? `copie Overload et vise ${targetName}`
       : `vise ${targetName}, qui recoit une surcharge`
-    return acknowledgeEffect(
+    return withC(acknowledgeEffect(
       updatePlayHistory(
         applyNegativeEffect(game, options.targetPlayerIndex!, {
           surcharge: 1,
@@ -981,7 +1016,7 @@ export function resolvePendingEffect(game: GameState, options: ResolveOptions = 
         effect,
         action,
       ),
-    )
+    ))
   }
 
   if (effect.kind === 'targeted-spy') {
@@ -991,6 +1026,7 @@ export function resolvePendingEffect(game: GameState, options: ResolveOptions = 
     players[options.targetPlayerIndex!] = {
       ...players[options.targetPlayerIndex!],
       handVisibleUntilTurn: game.turnNumber + game.players.length,
+      handVisibleToPlayerIndex: effect.playerIndex,
     }
     return acknowledgeEffect(
       updatePlayHistory(
@@ -1027,13 +1063,13 @@ export function resolvePendingEffect(game: GameState, options: ResolveOptions = 
       hand: targetHand,
       handVisibleUntilTurn: game.turnNumber + game.players.length,
     }
-    return acknowledgeEffect(
+    return withC(acknowledgeEffect(
       updatePlayHistory(
         { ...game, players },
         effect,
         `echange une carte avec ${targetPlayer.name}`,
       ),
-    )
+    ))
   }
 
   if (effect.kind === 'targeted-surcharge-transfer') {
@@ -1049,7 +1085,7 @@ export function resolvePendingEffect(game: GameState, options: ResolveOptions = 
       gauge: sourcePlayer.gauge - 1,
     }
     const targetName = game.players[options.targetPlayerIndex!].name
-    return acknowledgeEffect(
+    return withC(acknowledgeEffect(
       updatePlayHistory(
         applyNegativeEffect(
         { ...game, players },
@@ -1059,25 +1095,31 @@ export function resolvePendingEffect(game: GameState, options: ResolveOptions = 
         effect,
         `transfere une surcharge a ${targetName}`,
       ),
-    )
+    ))
   }
 
   if (effect.kind === 'targeted-threat') {
     validateTarget(game, effect.playerIndex, options.targetPlayerIndex)
-    const sourcePlayer = game.players[effect.playerIndex]
-    const targetPlayer = game.players[options.targetPlayerIndex!]
-    const takeCard = options.threatChoice === 'card'
-    const offeredCard = takeCard
-      ? sourcePlayer.hand.find((card) => card.id === options.offeredCardId)
-      : null
-
-    if (takeCard && !offeredCard) {
-      throw new Error("Choisissez une carte de votre main a donner.")
+    return {
+      ...game,
+      pendingEffect: {
+        ...effect,
+        kind: 'targeted-threat-response' as EffectKind,
+        playerIndex: options.targetPlayerIndex!,
+        sourcePlayerIndex: effect.playerIndex,
+      },
     }
+  }
+
+  if (effect.kind === 'targeted-threat-response') {
+    const sourcePlayerIndex = effect.sourcePlayerIndex!
+    const sourcePlayer = game.players[sourcePlayerIndex]
+    const targetPlayer = game.players[effect.playerIndex]
+    const takeCard = options.threatChoice === 'card'
 
     const nextGame = applyNegativeEffect(
       game,
-      options.targetPlayerIndex!,
+      effect.playerIndex,
       {
         draw: effect.isCombo ? 1 : 0,
         surcharge: takeCard ? 0 : 1,
@@ -1085,54 +1127,52 @@ export function resolvePendingEffect(game: GameState, options: ResolveOptions = 
       },
     )
     if (targetPlayer.shield) {
-      return acknowledgeEffect(
+      return withC(acknowledgeEffect(
         updatePlayHistory(
           nextGame,
           effect,
-          `Menace est annulee par le bouclier de ${targetPlayer.name}`,
+          `Menace annulée par le bouclier de ${targetPlayer.name}`,
         ),
-      )
+      ))
     }
 
-    if (takeCard) {
+    if (takeCard && sourcePlayer.hand.length > 0) {
       const players = [...nextGame.players]
+      const sourceHand = [...players[sourcePlayerIndex].hand]
+      const takenIndex = Math.floor(random() * sourceHand.length)
+      const [takenCard] = sourceHand.splice(takenIndex, 1)
+      players[sourcePlayerIndex] = { ...players[sourcePlayerIndex], hand: sourceHand }
       players[effect.playerIndex] = {
         ...players[effect.playerIndex],
-        hand: players[effect.playerIndex].hand.filter(
-          (card) => card.id !== offeredCard!.id,
-        ),
+        hand: [...players[effect.playerIndex].hand, takenCard],
       }
-      players[options.targetPlayerIndex!] = {
-        ...players[options.targetPlayerIndex!],
-        hand: [...players[options.targetPlayerIndex!].hand, offeredCard!],
-      }
-      return acknowledgeEffect(
+      return withC(acknowledgeEffect(
         updatePlayHistory(
           { ...nextGame, players },
           effect,
-          `${targetPlayer.name} prend une carte`,
+          `choisit de prendre une carte de ${sourcePlayer.name}`,
         ),
-      )
+      ))
     }
 
-    return acknowledgeEffect(
+    return withC(acknowledgeEffect(
       updatePlayHistory(
         nextGame,
         effect,
-        `inflige une surcharge a ${targetPlayer.name}`,
+        `choisit de prendre une surcharge`,
       ),
-    )
+    ))
   }
 
   if (effect.kind === 'chaos-human-pick') {
     if (!options.choiceCardId) {
       throw new Error("Cliquez sur une carte de votre adversaire pour l'obtenir.")
     }
-    return acknowledgeEffect(resolveChaos(game, random, options.choiceCardId))
+    return withC(acknowledgeEffect(resolveChaos(game, random, options.choiceCardId)))
   }
 
   if (effect.kind === 'left-neighbor-swap') {
-    return acknowledgeEffect(resolveChaos(game, random))
+    return withC(acknowledgeEffect(resolveChaos(game, random)))
   }
 
   if (effect.kind === 'copy-last-effect') {
@@ -1142,7 +1182,7 @@ export function resolvePendingEffect(game: GameState, options: ResolveOptions = 
     }
 
     if (copiedPlay.cardType === CARD_TYPES.CHAOS) {
-      return acknowledgeEffect(resolveChaos(game, random))
+      return withC(acknowledgeEffect(resolveChaos(game, random)))
     }
 
     if (copiedPlay.cardType === CARD_TYPES.OVERLOAD) {
@@ -1186,9 +1226,9 @@ export function resolvePendingEffect(game: GameState, options: ResolveOptions = 
         return { ...game, pendingEffect: { ...effect, kind: 'targeted-threat', isCombo } }
       }
 
-      return acknowledgeEffect(
+      return withC(acknowledgeEffect(
         applyAutoCardEffect(game, effect.playerIndex, value!, isCombo, game.turnDirection),
-      )
+      ))
     }
 
     return acknowledgeEffect(game)
@@ -1289,4 +1329,47 @@ export function startNextRound(game: GameState, random: () => number = Math.rand
     cumulativeScores: [...game.cumulativeScores],
     roundNumber: game.roundNumber + 1,
   }
+}
+
+export function forceEndRound(game: GameState): GameState {
+  const { players } = game
+
+  const winnerIndex = players.reduce((bestIndex, player, index) => {
+    const best = players[bestIndex]
+    if (player.hand.length < best.hand.length) return index
+    if (player.hand.length === best.hand.length && player.gauge < best.gauge) return index
+    return bestIndex
+  }, 0)
+
+  const penalties = calculateRoundPenalties(players, winnerIndex, false)
+  const cumulativeScores = game.cumulativeScores.map(
+    (score, index) => score + penalties[index].totalPenalty,
+  )
+  const triggeredBy = cumulativeScores
+    .map((score, index) => (score >= MATCH_POINT_LIMIT ? index : null))
+    .filter((x): x is number => x !== null)
+
+  const roundResult: RoundResult = {
+    winnerIndex,
+    winnerName: players[winnerIndex].name,
+    penalties,
+    cumulativeScores,
+    matchOver: triggeredBy.length > 0,
+  }
+
+  let matchResult: MatchResult | null = null
+  if (triggeredBy.length > 0) {
+    const lowestScore = Math.min(...cumulativeScores)
+    const winnerIndices = cumulativeScores
+      .map((score, index) => (score === lowestScore ? index : null))
+      .filter((x): x is number => x !== null)
+    matchResult = {
+      triggeredBy,
+      winnerIndices,
+      winners: winnerIndices.map((index) => players[index].name),
+      scores: [...cumulativeScores],
+    }
+  }
+
+  return { ...game, roundResult, matchResult, cumulativeScores, pendingEffect: null }
 }
