@@ -107,6 +107,77 @@ function App() {
   }
 
   useEffect(() => {
+    if (!import.meta.env.DEV) return undefined
+
+    window.__testSetup = (config) => {
+      const base = createGame(config.playerCount ?? 2)
+
+      // Collect all cards from every zone
+      const allCards = [
+        base.revealedCard,
+        ...base.discardPile,
+        ...base.drawPile,
+        ...base.players.flatMap((p) => p.hand),
+      ]
+      const usedIds = new Set()
+
+      const takeCard = ({ color, value, type } = {}) => {
+        const card = allCards.find(
+          (c) =>
+            !usedIds.has(c.id) &&
+            (!color || c.color === color) &&
+            (value === undefined || c.value === value) &&
+            (!type || c.type === type),
+        )
+        if (card) usedIds.add(card.id)
+        return card
+      }
+
+      const revealedCard = config.revealedCard
+        ? takeCard(config.revealedCard)
+        : (() => { usedIds.add(base.revealedCard.id); return base.revealedCard })()
+
+      const discardPile = config.discardPile
+        ? config.discardPile.map((spec) => takeCard(spec)).filter(Boolean)
+        : [revealedCard]
+
+      const players = base.players.map((player, i) => {
+        const cfg = config.players?.[i]
+        const hand = cfg?.hand
+          ? cfg.hand.map((spec) => takeCard(spec)).filter(Boolean)
+          : player.hand.filter((c) => !usedIds.has(c.id))
+        hand.forEach((c) => usedIds.add(c.id))
+        return {
+          ...player,
+          gauge: cfg?.gauge ?? player.gauge,
+          attacksSinceTurn: cfg?.attacksSinceTurn ?? player.attacksSinceTurn,
+          shield: cfg?.shield ?? player.shield,
+          hand,
+        }
+      })
+
+      setGame({
+        ...base,
+        activeColor: config.activeColor ?? base.activeColor,
+        revealedCard,
+        discardPile,
+        drawPile: Array.isArray(config.drawPile)
+          ? config.drawPile.map((spec) => takeCard(spec)).filter(Boolean)
+          : allCards.filter((c) => !usedIds.has(c.id)),
+        players,
+        currentPlayerIndex: config.currentPlayerIndex ?? 0,
+        lastPlay: config.lastPlay ?? null,
+        turnDirection: config.turnDirection ?? base.turnDirection,
+        cumulativeScores: Array.isArray(config.cumulativeScores)
+          ? config.cumulativeScores
+          : base.cumulativeScores,
+      })
+    }
+
+    return () => { delete window.__testSetup }
+  }, [])
+
+  useEffect(() => {
     if (!isBotTurn || !autoPlay) {
       return undefined
     }
@@ -132,11 +203,6 @@ function App() {
 
     if (selectedCardIds.length === 0) {
       setSelectedCardIds([card.id])
-      return
-    }
-
-    if (isReplayingCard) {
-      setPlayError("Vous ne pouvez rejouer qu'une seule carte.")
       return
     }
 
@@ -393,7 +459,7 @@ function App() {
                 )
               })}
             </div>
-            {game.currentPlayerIndex === 0 && !game.roundResult && (
+            {(game.currentPlayerIndex === 0 || isRespondingToThreat || isChaosHumanPick) && !game.roundResult && (
               <div className="hand-actions">
                 {isChoosingTarget && (
                   <span className="target-player-prompt" role="status">
@@ -410,36 +476,13 @@ function App() {
                 )}
                 {isChaosHumanPick && (
                   <span className="target-player-prompt" role="status">
-                    Cliquez sur une carte face cachée de {game.players[chaosNeighborIndex].name} pour l'obtenir.
+                    Cliquez sur une carte de {game.players[chaosNeighborIndex].name} pour l'obtenir.
                   </span>
                 )}
                 {isReplayingCard && (
                   <span className="target-player-prompt" role="status">
                     Sélectionnez une carte valide à rejouer, puis cliquez sur « Rejouer ».
                   </span>
-                )}
-                {isChoosingColor && (
-                  <div className="color-choice" role="group" aria-label="Choisir la couleur active">
-                    <span>
-                      {game.pendingEffect.isCombo
-                        ? 'Choisissez une couleur. Les combos seront bloqués au prochain tour.'
-                        : 'Choisissez la couleur active.'}
-                    </span>
-                    <div className="color-choice-options">
-                      {CARD_COLORS.filter((color) => color.id !== 'purple').map((color) => (
-                        <button
-                          className="color-choice-button"
-                          key={color.id}
-                          type="button"
-                          style={{ '--choice-color': color.hex }}
-                          aria-label={color.label}
-                          onClick={() => handleChooseColor(color.id)}
-                        >
-                          {color.label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
                 )}
                 {isRespondingToThreat && (
                   <div className="threat-response">
@@ -483,6 +526,9 @@ function App() {
           onAutoPlayChange={setAutoPlay}
           isBotTurn={isBotTurn}
           onNextBot={handleNextBot}
+          isChoosingColor={isChoosingColor}
+          colorChoiceIsCombo={isChoosingColor && game.pendingEffect.isCombo}
+          onChooseColor={handleChooseColor}
           playDisabled={
             game.currentPlayerIndex !== 0 ||
             Boolean(game.roundResult) ||

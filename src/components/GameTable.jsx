@@ -20,6 +20,12 @@ export default function GameTable({
   const revealedCardColor = CARD_COLORS.find((color) => color.id === game.revealedCard.color)
   const activeColorId = game.activeColor ?? 'purple'
   const tableColor = CARD_COLORS.find((color) => color.id === activeColorId)
+  const lastNumericCard = revealedCardColor?.id === 'purple'
+    ? ([...game.discardPile].reverse().find((c) => c.type === 'number') ?? null)
+    : null
+  const lastNumericCardColor = lastNumericCard
+    ? CARD_COLORS.find((c) => c.id === lastNumericCard.color)
+    : null
 
   return (
     <div className="table-stage">
@@ -82,7 +88,14 @@ export default function GameTable({
                 <span className="table-player-count">
                   {playerCount} JOUEURS
                 </span>
-                <RevealedCard card={game.revealedCard} color={revealedCardColor} />
+                <div className="revealed-card-wrapper">
+                  {lastNumericCard && lastNumericCardColor && (
+                    <div className="revealed-card-peek" aria-hidden="true">
+                      <RevealedCard card={lastNumericCard} color={lastNumericCardColor} />
+                    </div>
+                  )}
+                  <RevealedCard card={game.revealedCard} color={revealedCardColor} />
+                </div>
                 <span className="revealed-card-caption">Première carte</span>
                 <span className="table-starter">
                   Commence : {game.players[game.startingPlayerIndex].name}

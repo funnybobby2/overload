@@ -173,6 +173,14 @@
   line-height: 1;
 }
 
+/* === Mirror image icon === */
+.card-mirror-icon {
+  width: 1em;
+  height: 1em;
+  object-fit: contain;
+  filter: brightness(0) invert(1);
+}
+
 /* === Corner value (bottom-right, rotated) === */
 .card-value-corner {
   position: absolute;

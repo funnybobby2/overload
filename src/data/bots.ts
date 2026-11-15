@@ -293,7 +293,7 @@ export function playBotTurn(
   }
 
   nextGame = resolveBotEffects(nextGame, botIndex, random)
-  if (nextGame.roundResult || nextGame.pendingEffect?.kind === 'chaos-human-pick') {
+  if (nextGame.roundResult || nextGame.pendingEffect) {
     return nextGame
   }
 

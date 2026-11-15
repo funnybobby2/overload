@@ -87,7 +87,7 @@ export const SPECIAL_CARD_POWERS = {
   },
   [CARD_TYPES.MIRROR]: {
     name: 'Miroir',
-    simple: "Copie l'effet de la dernière carte jouée, combo inclus. Ne copie ni un Miroir ni l'effet combo Rejouer du 1.",
+    simple: "Copie l'effet de la dernière carte jouée, combo inclus. Ne copie ni un Miroir ni l'effet Rejouer du 1, ni le Rejouer du combo 5.",
     effect: 'copy-last-effect',
   },
   [CARD_TYPES.CHAOS]: {

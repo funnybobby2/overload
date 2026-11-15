@@ -105,10 +105,10 @@
   width: 100%;
   min-height: 54px;
   padding: 0 17px;
-  border: 1px solid #3c4b40;
+  border: 1px solid #06080a;
   border-radius: 8px;
   outline: none;
-  background: #19221c;
+  background: #1a1c21;
   color: #f3efe2;
   font: inherit;
   cursor: pointer;
@@ -116,13 +116,13 @@
 }
 
 .player-select:focus-visible {
-  border-color: #d5b66e;
-  box-shadow: 0 0 0 3px rgba(213, 182, 110, 0.16);
+  border-color: #3885e4;  
+  box-shadow: 0 0 0 3px rgba(56, 133, 228, 0.16);
 }
 
 .player-select option {
   background: #19221c;
-  color: #f3efe2;
+  color: #e2eef3;
 }
 
 .setup-hint {

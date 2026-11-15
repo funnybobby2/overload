@@ -1,7 +1,7 @@
 import './Card.css'
 import cardBackImg from '../assets/card back.png'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
-import { faExplosion, faBatteryQuarter, faLeftRight } from '@fortawesome/free-solid-svg-icons'
+import { faExplosion, faBatteryQuarter } from '@fortawesome/free-solid-svg-icons'
 import { CARD_TYPES } from '../data/cards.ts'
 
 const CARD_TYPE_LABELS = {
@@ -13,7 +13,6 @@ const CARD_TYPE_LABELS = {
 const CARD_TYPE_ICONS = {
   [CARD_TYPES.CHAOS]: faExplosion,
   [CARD_TYPES.OVERLOAD]: faBatteryQuarter,
-  [CARD_TYPES.MIRROR]: faLeftRight,
 }
 
 function getValueLabel(card) {
@@ -22,6 +21,9 @@ function getValueLabel(card) {
 
 function CardValueContent({ card }) {
   if (card.type === CARD_TYPES.NUMBER) return card.value
+  if (card.type === CARD_TYPES.MIRROR) {
+    return <img src="/miroir.png" alt="" aria-hidden="true" className="card-mirror-icon" />
+  }
   return <FontAwesomeIcon icon={CARD_TYPE_ICONS[card.type]} aria-hidden="true" />
 }
 

@@ -82,6 +82,25 @@
   font-size: 9px;
 }
 
+.revealed-card-wrapper {
+  position: relative;
+  display: inline-flex;
+}
+
+.revealed-card-peek {
+  position: absolute;
+  left: -40%;
+  top: 8%;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0.9;
+}
+
+.revealed-card-wrapper .card-revealed {
+  position: relative;
+  z-index: 1;
+}
+
 .table-starter {
   margin-top: 3px;
   color: #f0e5c4;
@@ -300,7 +319,7 @@
   display: grid;
   place-items: center;
   color: #8bd1db;
-  font-size: 12px;
+  font-size: 28px;
 }
 
 .player-status {

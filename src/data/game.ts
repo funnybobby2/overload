@@ -160,10 +160,14 @@ function describePlay(player: Player, cards: Card[], game: GameState): PlayRecor
   } else if (card.type === CARD_TYPES.CHAOS) {
     action = "declenche un echange de cartes avec les voisins de gauche"
   } else if (card.type === CARD_TYPES.MIRROR) {
-    const copiedPlay = game.lastPlay
-    action = copiedPlay
-      ? `copie l'effet de ${copiedPlay.power?.name ?? 'la derniere carte'}`
-      : 'ne copie aucun effet'
+    const copiedPlay = getMirrorSource(game.lastPlay)
+    if (!copiedPlay) {
+      action = 'ne copie aucun effet'
+    } else if (copiedPlay.cardType === CARD_TYPES.NUMBER && copiedPlay.power?.name === 'Rejouer' && copiedPlay.isCombo) {
+      action = 'copie le combo de 1 : fait piocher un joueur'
+    } else {
+      action = `copie l'effet de ${copiedPlay.power?.name ?? 'la derniere carte'}`
+    }
   } else if (card.type === CARD_TYPES.NUMBER) {
     const combo = cards.length > 1
     switch (card.value) {
@@ -505,13 +509,13 @@ export function calculateRoundPenalties(players: Player[], winnerIndex: number, 
   return players.map((player, playerIndex) => {
     const isExempt = exemptWinner && playerIndex === winnerIndex
     const cardsPenalty = isExempt ? 0 : player.hand.length
-    const surchargePenalty = isExempt ? 0 : player.gauge * 3
+    const surchargePenalty = player.gauge * 2
 
     return {
       playerIndex,
       playerName: player.name,
       cardsRemaining: isExempt ? 0 : player.hand.length,
-      surchargeLevels: isExempt ? 0 : player.gauge,
+      surchargeLevels: player.gauge,
       cardsPenalty,
       surchargePenalty,
       totalPenalty: cardsPenalty + surchargePenalty,
@@ -526,7 +530,8 @@ function getMirrorSource(lastPlay: LastPlay | null): LastPlay | null {
 
   if (
     lastPlay.cardType === CARD_TYPES.NUMBER &&
-    lastPlay.power?.name === 'Rejouer'
+    lastPlay.power?.name === 'Rejouer' &&
+    !lastPlay.isCombo
   ) {
     return null
   }
@@ -822,26 +827,18 @@ function resolveChaos(game: GameState, random: () => number, humanChoiceCardId: 
     throw new TypeError("La source aleatoire doit etre une fonction.")
   }
 
-  if (game.players.some((player) => player.hand.length === 0)) {
-    throw new Error("Chaque joueur doit avoir une carte en main pour resoudre le Chaos.")
-  }
-
   const chosenCards: CardTransfer[] = game.players.map((_, index) => {
     const neighborIndex = (index + game.turnDirection + game.players.length) % game.players.length
     const neighborHand = game.players[neighborIndex].hand
     const protectedByShield = game.players[index].shield
     const cardCount = game.lowDeckActive ? 2 : 1
 
-    if (protectedByShield) {
+    if (protectedByShield || neighborHand.length === 0) {
       return {
         sourceIndex: neighborIndex,
         recipientIndex: index,
         cards: [],
       }
-    }
-
-    if (neighborHand.length < cardCount) {
-      throw new Error("Le voisin de gauche n'a pas assez de cartes pour le Chaos.")
     }
 
     if (index === 0 && humanChoiceCardId !== null) {
@@ -861,7 +858,8 @@ function resolveChaos(game: GameState, random: () => number, humanChoiceCardId: 
     }
 
     const availableCards = [...neighborHand]
-    const cards = Array.from({ length: cardCount }, () => {
+    const takeCount = Math.min(cardCount, availableCards.length)
+    const cards = Array.from({ length: takeCount }, () => {
       const cardIndex = Math.floor(random() * availableCards.length)
       return availableCards.splice(cardIndex, 1)[0]
     })
@@ -1193,14 +1191,12 @@ export function resolvePendingEffect(game: GameState, options: ResolveOptions = 
       const { value, isCombo } = copiedPlay
 
       if (value === 1) {
-        return acknowledgeEffect(game)
+        if (!isCombo) return acknowledgeEffect(game)
+        return { ...game, pendingEffect: { ...effect, kind: 'number-one-combo-target' } }
       }
 
       if (value === 5) {
         const updatedGame = { ...game, turnDirection: (game.turnDirection * -1) as 1 | -1 }
-        if (isCombo) {
-          return { ...updatedGame, pendingEffect: { ...effect, kind: 'number-one-replay' } }
-        }
         return acknowledgeEffect(updatedGame)
       }
 
@@ -1290,8 +1286,8 @@ export function replayCard(game: GameState, playerIndex: number, cardIds: string
     throw new Error("Aucune carte ne peut etre rejouee pour ce joueur.")
   }
 
-  if (!Array.isArray(cardIds) || cardIds.length !== 1) {
-    throw new Error("Rejouez une seule carte.")
+  if (!Array.isArray(cardIds) || cardIds.length < 1 || cardIds.length > 2) {
+    throw new Error("Rejouer nécessite une ou deux cartes.")
   }
 
   const replayedGame = playCards(
